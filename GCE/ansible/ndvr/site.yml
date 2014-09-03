@@ -1,0 +1,5 @@
+---
+# compute-video-demo-ansible
+- include: gce-instances.yml
+- include: gce-network.yml
+- include: recmanager.yml

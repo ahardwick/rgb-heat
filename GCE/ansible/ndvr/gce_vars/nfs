@@ -1,0 +1,4 @@
+---
+# Variables defined for us-central1-a
+names_nfs: ndbr-store
+zone_nfs: us-central1-a

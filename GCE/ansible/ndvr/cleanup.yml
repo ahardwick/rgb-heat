@@ -1,0 +1,80 @@
+---
+# compute-video-demo-ansible
+- name: Destroy all demo resources
+  hosts: local
+  gather_facts: False
+  vars_files:
+    - gce_vars/auth
+    - gce_vars/machines_jitp
+    - gce_vars/machines_rec
+    - gce_vars/machines_nfs
+    - gce_vars/machines_recmanager
+    - gce_vars/jitp
+    - gce_vars/rec
+    - gce_vars/nfs
+    - gce_vars/recmanager
+    - gce_vars/lb
+  tasks:
+    - name: Destroy the JITP instances
+      gce:
+        instance_names: "{{ names_jitp }}"
+        zone: "{{ zone_jitp }}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        state: absent
+      register: gce_jitp
+
+    - name: Destroy the REC instances
+      gce:
+        instance_names: "{{ names_rec }}"
+        zone: "{{ zone_rec }}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        state: absent
+      register: gce_rec
+
+    - name: Destroy the Record Manager instances
+      gce:
+        instance_names: "{{ names_recmanager }}"
+        zone: "{{ zone_recmanager}}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        state: absent
+      register: gce_recmanager
+
+    - name: Destroy the NFS instances
+      gce:
+        instance_names: "ndvr-store"
+        zone: "{{ zone_nfs}}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        state: absent
+      register: gce_nfs-store
+
+    - name: Make sure the persistent disks are destroyed
+      gce_pd: name={{ item.name }} zone={{ item.zone }} state=absent
+              project_id={{ pid }} pem_file={{ pem }} service_account_email={{ email }}
+      with_items:
+        - { name: "jitp1", zone: "us-central1-a" }
+        - { name: "jitp2", zone: "us-central1-a" }
+        - { name: "recorder1", zone: "us-central1-a" }
+        - { name: "record-manager1", zone: "us-central1-a" }
+#
+# DO NOT DESTROY / DELETE the NFS-STORE DISK
+#
+
+    - name: Destroy the LB instances
+      gce_lb:
+        name: jitp-lb
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        port_range: 80
+        protocol: tcp
+        httphealthcheck_name: jitp-healthcheck
+        state: absent
+      register: gce_lb

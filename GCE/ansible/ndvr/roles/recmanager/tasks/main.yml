@@ -1,0 +1,77 @@
+---
+
+#- debug: var=hostvars[inventory_hostname]
+#- debug: msg="{{ hostvars }}"
+#- debug: msg="{{ groups }}"
+#- debug: msg="Item is {{ hostvars['127.0.0.1']['gce_recmanager']['instance_data'][0]['private_ip'] }}"
+
+- name: Set file stats on rm_api.py
+  file: path=/tmp/rm_api.py owner=root group=root mode=0777
+
+- name: Replace RM IP
+  replace: dest=/tmp/rm_api.py regexp="^RM_IP = .*" replace="RM_IP = '{{ hostvars['127.0.0.1']['gce_recmanager']['instance_data'][0]['private_ip'] }}'"
+- name: Replace NFS_STORAGE_NAME
+  replace: dest=/tmp/rm_api.py regexp="^NFS_STORAGE_NAME = .*" replace="NFS_STORAGE_NAME = 'storage'"
+- name: Replace NFS_STORAGE_URL
+  replace: dest=/tmp/rm_api.py regexp="^NFS_STORAGE_URL = .*" replace="NFS_STORAGE_URL = '{{ hostvars['127.0.0.1']['gce_nfs']['instance_data'][0]['private_ip'] }}:/home/share'"
+- name: Replace NFS_STORAGE_ORIGIN_BASE
+  replace: dest=/tmp/rm_api.py regexp="^NFS_STORAGE_ORIGIN_BASE = .*" replace="NFS_STORAGE_ORIGIN_BASE = 'http://{{ hostvars['127.0.0.1']['gce_nfs']['instance_data'][0]['public_ip'] }}/origin'"
+- name: Replace RECORDER_NAME
+  replace: dest=/tmp/rm_api.py regexp="^RECORDER_NAME = .*" replace="RECORDER_NAME = 'recorder1'"
+- name: Replace RECORDER_IP
+  replace: dest=/tmp/rm_api.py regexp="^RECORDER_IP = .*" replace="RECORDER_IP = '{{ hostvars['127.0.0.1']['gce_rec']['instance_data'][0]['private_ip'] }}'"
+- name: Replace RECORDER_NAME
+  replace: dest=/tmp/rm_api.py regexp="^RECORDER_NAME = .*" replace="RECORDER_NAME = 'recorder1'"
+- name: Replace REDUNDANT_IP
+  replace: dest=/tmp/rm_api.py regexp="^REDUNDANT_IP = .*" replace="REDUNDANT_IP = ''"
+
+- name: Replace JITP_NAME
+  replace: dest=/tmp/rm_api.py regexp="^JITP_NAME = .*" replace="JITP_NAME = 'jitp1'"
+- name: Replace JITP_IP
+  replace: dest=/tmp/rm_api.py regexp="^JITP_IP = .*" replace="JITP_IP = '{{ hostvars['127.0.0.1']['gce_jitp']['instance_data'][0]['private_ip'] }}'"
+- name: Replace JITP_ROLE
+  replace: dest=/tmp/rm_api.py regexp="^JITP_ROLE = .*" replace="JITP_ROLE = '0'"
+#
+# JITP2
+#
+- name: Replace RM IP
+  replace: dest=/tmp/rm_api_jitp.py regexp="^RM_IP = .*" replace="RM_IP = '{{ hostvars['127.0.0.1']['gce_recmanager']['instance_data'][0]['private_ip'] }}'"
+- name: Replace JITP_NAME
+  replace: dest=/tmp/rm_api_jitp.py regexp="^JITP_NAME = .*" replace="JITP_NAME = 'jitp2'"
+- name: Replace JITP_IP
+  replace: dest=/tmp/rm_api_jitp.py regexp="^JITP_IP = .*" replace="JITP_IP = '{{ hostvars['127.0.0.1']['gce_jitp']['instance_data'][1]['private_ip'] }}'"
+- name: Replace JITP_ROLE
+  replace: dest=/tmp/rm_api_jitp.py regexp="^JITP_ROLE = .*" replace="JITP_ROLE = '0'"
+
+- debug: msg="{{ hostvars['127.0.0.1']['gce_lb'] }}"
+- name: Replace CR_SOURCE_PATTERN
+  replace: dest=/tmp/rm_api.py regexp="^CR_SOURCE_PATTERN = .*" replace="CR_SOURCE_PATTERN = '{{ hostvars['127.0.0.1']['gce_lb']['external_ip'] }}'"
+  #replace: dest=/tmp/rm_api.py regexp="^CR_SOURCE_PATTERN = .*" replace="CR_SOURCE_PATTERN = '{{ hostvars['127.0.0.1']['gce_jitp']['instance_data'][0]['public_ip'] }}'"
+- name: Replace TRANSCODER_NAME
+  replace: dest=/tmp/rm_api.py regexp="^TRANSCODER_NAME = .*" replace="TRANSCODER_NAME = 'transcoder'"
+- name: Replace TRANSCODER_IP
+  replace: dest=/tmp/rm_api.py regexp="^TRANSCODER_IP = .*" replace="TRANSCODER_IP = '10.10.10.10'"
+- name: Replace TRANSCODER_TYPE
+  replace: dest=/tmp/rm_api.py regexp="^TRANSCODER_TYPE = .*" replace="TRANSCODER_TYPE = '1'"
+
+- name: Wait for Recording Manager to start
+  wait_for: port=80 state=started
+
+#- uri: url=http://localhost/npvr.fcgi/gui/recorder/ 
+#       method=GET
+#       return_content=yes
+#       status_code=200 timeout=300
+#  async: 300
+#  poll: 10
+#  register: amiup
+
+#- fail: 
+#       when 'rgb' not in "{{ amiup.content }}"
+   #debug: msg="amiup = {{ amiup.content}}"
+
+- pause: seconds=45
+
+- name: Update Recording Manager
+  shell: ./rm_api.py >> rm_api.py.log chdir=/tmp
+- name: Update Recording Manager JITP2
+  shell: ./rm_api_jitp.py >> rm_api_jitp.py.log chdir=/tmp

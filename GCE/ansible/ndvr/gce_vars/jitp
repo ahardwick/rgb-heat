@@ -1,0 +1,5 @@
+---
+# Variables defined for us-central1-a
+names_jitp: jitp1,jitp2
+zone_jitp: us-central1-a
+lb_members: us-central1-a/jitp1

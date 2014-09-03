@@ -1,0 +1,4 @@
+---
+# Variables defined for us-central1-a
+names_recmanager: record-manager1
+zone_recmanager: us-central1-a

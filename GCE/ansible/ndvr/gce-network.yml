@@ -1,0 +1,24 @@
+---
+# compute-video-demo-ansible
+- name: Set up networking
+  hosts: local
+  gather_facts: False
+  vars_files:
+    - gce_vars/auth
+    - gce_vars/lb
+  tasks:
+    - name: Create the load-balancer with members
+      gce_lb:
+        name: jitp-lb
+        members: "{{ members }}"
+        region: "{{ region }}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        port_range: 80
+        protocol: tcp
+        httphealthcheck_name: jitp-healthcheck
+        httphealthcheck_port: 80
+        httphealthcheck_path: "/crossdomain.xml"
+      register: gce_lb
+    - add_host: hostname={{ gce_lb.external_ip }} groupname=lb_instances

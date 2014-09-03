@@ -1,0 +1,4 @@
+---
+# Common Compute Engine instance variables
+machine_type_jitp: n1-standard-1
+image_jitp: tap531

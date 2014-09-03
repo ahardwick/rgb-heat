@@ -1,0 +1,75 @@
+---
+# compute-video-demo-ansible
+- name: Create Compute Engine instances
+  hosts: local
+  gather_facts: False
+  vars_files:
+    - gce_vars/auth
+    - gce_vars/machines_jitp
+    - gce_vars/machines_rec
+    - gce_vars/machines_nfs
+    - gce_vars/machines_recmanager
+    - gce_vars/jitp
+    - gce_vars/rec
+    - gce_vars/nfs
+    - gce_vars/recmanager
+  tasks:
+    - name: Bring up the NFS instances
+      gce:
+        instance_names: "ndvr-store"
+        machine_type: "{{ machine_type_nfs }}"
+        #image: "{{ image_nfs }}"
+        zone: "{{ zone_nfs }}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        #persistent_boot_disk: "ndvr-store"
+        disks: [{"name" : "ndvr-store", "mode" : "READ_WRITE"}, {"name" : "ndvr-nas", "mode" : "READ_WRITE"}]
+        tags: http-server,https-server
+      register: gce_nfs
+    - add_host: hostname={{ gce_nfs.instance_data[0].public_ip }} groupname=nfs_instances
+
+    - name: Bring up the JITP instances
+      gce:
+        instance_names: "{{ names_jitp }}"
+        machine_type: "{{ machine_type_jitp }}"
+        image: "{{ image_jitp }}"
+        zone: "{{ zone_jitp }}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        tags: http-server,https-server
+      register: gce_jitp
+    - add_host: hostname={{ gce_jitp.instance_data[0].public_ip }} groupname=jitp_instances
+    - add_host: hostname={{ gce_jitp.instance_data[1].public_ip }} groupname=jitp_instances
+
+    - name: Bring up the Recorder instances
+      gce:
+        instance_names: "{{ names_rec }}"
+        machine_type: "{{ machine_type_rec }}"
+        image: "{{ image_rec }}"
+        zone: "{{ zone_rec}}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        tags: http-server,https-server
+      register: gce_rec
+    - add_host: hostname={{ gce_rec.instance_data[0].public_ip }} groupname=rec_instances
+
+    - name: Bring up the Record Manager instances
+      gce:
+        instance_names: "{{ names_recmanager }}"
+        machine_type: "{{ machine_type_recmanager }}"
+        image: "{{ image_recmanager }}"
+        zone: "{{ zone_recmanager}}"
+        project_id: "{{ pid }}"
+        pem_file: "{{ pem }}"
+        service_account_email: "{{ email }}"
+        tags: http-server,https-server
+      register: gce_recmanager
+    - add_host: hostname={{ gce_recmanager.instance_data[0].public_ip }} groupname=recmanager_instances
+
+  post_tasks:
+    - name: Wait for SSH for instances RECMANAGER
+      local_action:  wait_for delay=1 host={{ item.public_ip }} port=22 state=started timeout=120
+      with_items: gce_recmanager.instance_data

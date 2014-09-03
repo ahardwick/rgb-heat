@@ -1,0 +1,5 @@
+---
+# Google Compute Engine required authentication global variables
+pid: robotic-incline-615
+email: 207478792472-gd7mf6lgj0m9o6d1shfec4l3jpsr8e93@developer.gserviceaccount.com
+pem: /home/ahardwick/gce-key.pem

@@ -1,0 +1,7 @@
+---
+# compute-video-demo-ansible
+- name: Update record manager config
+  hosts: recmanager_instances
+  sudo: yes
+  roles:
+    - recmanager
