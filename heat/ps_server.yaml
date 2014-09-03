@@ -1,0 +1,122 @@
+heat_template_version: 2013-05-23
+
+parameters:
+  Key_name:
+    type: string
+    description: keypair to enable SSH access to the instance.
+    default: rgb_heat
+  private_net:
+    type: string
+    description: Name of private network to be created
+  private_subnet:
+    type: string
+    description: Name of private network to be created
+  public_net:
+    type: string
+    description: Name of private network to be created
+  ADS_address:
+    type: string
+    description: Name of ADS server
+  OSS_address:
+    type: string
+    description: Name of OSS server
+  Sources_address:
+    type: string
+    description: Name Repository Server
+  pool_id:
+    type: string
+    description: ID of LB pool
+  Image_name:
+    type: string
+    description: Image to use
+    default: RGB_CentOS-6.3_17601_Cloud
+  PS_flavor:
+    type: string
+    description: Flavor to use for PS
+    default: m1.RGB_Large
+    constraints:
+        - allowed_values:
+          - m1.RGB_Small
+          - m1.RGB_Medium
+          - m1.RGB_Large
+
+resources:
+
+  PS:
+    type: OS::Nova::Server
+    properties:
+      image: { get_param: Image_name }
+      flavor: { get_param: PS_flavor }
+      key_name: { get_param: Key_name }
+      user_data:
+        str_replace:
+           template: |
+              #!/bin/bash -v
+              sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/" /etc/ssh/sshd_config
+              service sshd restart
+              echo "oss_ip_address  OSS  OSS.rgbnetworks.com" >> /etc/hosts
+              echo "ads_ip_address  ADS  ADS.rgbnetworks.com" >> /etc/hosts
+              echo "10.5.0.20  AWE  AWE.rgbnetworks.com" >> /etc/hosts
+              current_ip=`curl -s http://169.254.169.254/1.0/meta-data/local-ipv4`
+              current_hostname=`curl -s http://169.254.169.254/1.0/meta-data/hostname|cut -d'.' -f1`
+              echo "$current_ip $current_hostname $current_hostname.rgbnetworks.com" >> /etc/hosts
+              # Add routing
+              echo "Add routing"
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.5.0.1
+              #Update /etc/sysconfig/network for gateway IP, just to be sure!
+              echo "GATEWAY=10.5.0.1" >> /etc/sysconfig/network
+              cat << EOF >> /etc/rc.local
+              ip link set dev eth0 mtu 1450
+              # Run once to startup server
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  service ntpd restart
+                  mkdir /root/sources
+                  cd /root/sources
+                  #wget https://dl.bintray.com/mitchellh/serf/0.6.3_linux_amd64.zip -O serf.zip
+                  #unzip serf.zip
+                  #./serf agent >> /var/log/serf.log 2>&1 &
+                  #./serf join 10.5.0.20
+                  curl -s http://sources-ip/aim/v1/prrs.rampx -o prrs.rampx
+                  chmod +x prrs.rampx
+                  ./prrs.rampx -v -n
+                  sed -i "s/client_host = localhost/client_host = AWE/" /opt/rgb/etc/abrain.config
+                  sed -i "s/service_host = localhost/service_host = $current_ip/" /opt/rgb/etc/abrain.config
+                  service aim restart
+                  touch /etc/rgb-cloud.done
+              fi
+              EOF
+           params:
+              sources-ip: { get_param: Sources_address }
+              ads_ip_address: { get_param: ADS_address }
+              oss_ip_address: { get_param: OSS_address }
+      metadata:
+        metering.instgroup: ogrp
+      networks:
+        - port: { get_resource: PS_port }
+
+  PS_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_param: private_net }
+      fixed_ips:
+        - subnet_id: { get_param: private_subnet }
+
+  PS_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net }
+      port_id: { get_resource: PS_port }
+
+  member:
+    type: OS::Neutron::PoolMember
+    properties:
+      pool_id: {get_param: pool_id}
+      address: {get_attr: [PS, first_address]}
+      protocol_port: 8080
+
+outputs:
+    PS_address:
+        description: Assigned IP address of the instance
+        value: {get_attr: [PS, first_address]}

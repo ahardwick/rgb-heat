@@ -1,0 +1,383 @@
+heat_template_version: 2013-05-23
+
+description: >
+  HOT Template to create the nDVR instances attached to a NEW router and NEW network/subnet.
+
+parameters:
+  Key_name:
+    type: string
+    description: Name of keypair to assign to servers
+    default: rgb_heat
+  Client_net_name:
+    type: string
+    description: Name of private network to be created
+  Sources_address:
+    type: string
+    description: Software sources IP address
+    default: 192.155.251.107
+  NFS_Storage_address:
+    type: string
+    description: NFS IP address
+    default: 192.168.111.247
+  NFS_Storage_path:
+    type: string
+    description: NFS path
+    default: /opt/localmnt/share/
+  Origin_IP:
+    type: string
+    description: Origin Server Public IP
+    default: 192.155.251.109
+  Origin_path:
+    type: string
+    description: Origin Server path
+    default: origin
+  TAT_ip_address:
+    type: string
+    description: Transcoder IP
+    default: 192.168.111.7
+  RGB_Services_Id:
+    type: string
+    description: ID of Multicast Network
+    default: 8020b95f-553e-4f36-a5d1-1cc1a9b09078
+  Multicast_Id:
+    type: string
+    description: ID of Multicast Network
+    default: 3fb3ed86-15ee-4960-9786-e7db21817462
+  External_Id:
+    type: string
+    description: ID of Multicast Network
+    default: 176487e8-d187-4e42-88ff-4f8ec4674c0d
+
+resources:
+  client_net:
+    type: OS::Neutron::Net
+    properties:
+      name: { get_param: Client_net_name }
+
+  client_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: client_net }
+      cidr: 10.10.1.0/24
+      dns_nameservers : [8.8.8.8, 8.8.4.4]
+      gateway_ip: 10.10.1.1
+      allocation_pools:
+        - start: 10.10.1.50
+          end: 10.10.1.80
+
+  client_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: client_net }
+      cidr: 10.10.1.0/24
+      dns_nameservers : [8.8.8.8, 8.8.4.4]
+      gateway_ip: 10.10.1.1
+      allocation_pools:
+        - start: 10.10.1.50
+          end: 10.10.1.80
+  router:
+    type: OS::Neutron::Router
+
+  router_gateway:
+    type: OS::Neutron::RouterGateway
+    properties:
+      router_id: { get_resource: router }
+      network_id: { get_param: External_Id }
+
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: client_subnet }
+
+  RecordingManager:
+    type: OS::Nova::Server
+    properties:
+      name: RecordingManager
+      image: RGB_CentOS-6.5_22525_Cloud
+      flavor: m1.RGB_Small
+      key_name: { get_param: Key_name }
+      user_data:                                                                                                                                                
+        str_replace:                                                                                                                                            
+           template: |                                                                                                                                          
+              #!/bin/bash
+              exec 1>/var/log/RGBCloud.log 2>&1
+              echo "########################################################"
+              echo "########################################################"
+              echo "#Userdata"
+              rm -f /etc/localtime
+              ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+              sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/" /etc/ssh/sshd_config
+              service sshd restart
+              ip link set dev eth0 mtu 1450
+              ip link set dev eth1 mtu 1450
+              # Learn allocated IP addresses for Mgmt and Multicast
+              # Can remove this with IceHouse
+              curl -s http://sources-ip/misc/sysctl.conf -o /etc/sysctl.conf
+              sysctl -p /etc/sysctl.conf
+              echo "Learn local IP addresses"
+              myip=`curl -s http://169.254.169.254/1.0/meta-data/local-ipv4`
+              myip_eth1=`ifconfig eth1 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'`
+              #Update /etc/sysconfig/network for gateway IP, just to be sure!
+              echo "GATEWAY=10.10.1.1" >> /etc/sysconfig/network
+              cat << EOF >> /etc/rc.local
+              # Add routing
+              echo "#rc.local"
+              date
+              echo "Add routing"
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.10.1.1
+              # Run once to startup server
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  service ntpd restart
+                  cd /root/sources
+                  curl -s http://sources-ip/ndvr/v1.0.1/RM_1_Trial_2014.key -o RM_1_Trial_2014.key
+                  curl -s http://sources-ip/ndvr/v1.0.1/rm.rampx -o rm.rampx
+                  chmod +x rm.rampx
+                  ./rm.rampx -v -n
+                  cp /root/sources/RM_1_Trial_2014.key /var/lib/safenet/lservrc
+                  /etc/init.d/lserv restart
+                  service raps restart
+                  cp /opt/rgb/bin/rm_api.py rm_api.py.copy
+                  source ./config_rm_py.sh
+                  sleep 30
+                  ./rm_api.py
+                  echo "NNM Configured"
+                  /etc/init.d/lserv restart
+                  touch /etc/rgb-cloud.done
+              fi
+              EOF
+              echo "Added NNM to rc.local"
+              # Create config file to be used by RM API config util
+              cd /root/sources
+              curl -s http://sources-ip/ndvr/v1.0.1/rm_api.py -o rm_api.py
+              chmod +x rm_api.py
+              cat << EOF >> config_rm_py.sh
+              sed -i "/RM_IP =/ c\RM_IP = \'$myip\'" rm_api.py
+              sed -i "/RM_HTTP_PORT =/ c\RM_HTTP_PORT = '80'" rm_api.py
+              sed -i "/NFS_STORAGE_NAME =/ c\NFS_STORAGE_NAME = 'storage'" rm_api.py
+              sed -i "/NFS_STORAGE_URL =/ c\NFS_STORAGE_URL = 'NFS_Storage_address:NFS_Storage_path'" rm_api.py
+              sed -i "/NFS_STORAGE_ORIGIN_BASE =/ c\NFS_STORAGE_ORIGIN_BASE = 'http://origin_address/origin_path'" rm_api.py
+              sed -i "/RECORDER_NAME =/ c\RECORDER_NAME = 'recorder1'" rm_api.py
+              sed -i "/RECORDER_IP =/ c\RECORDER_IP = 'rec_ip_address'" rm_api.py
+              sed -i "/REDUNDANT_IP =/ c\REDUNDANT_IP = ''" rm_api.py
+              #STITCHER_NAME = 'stitcher1'
+              #STITCHER_IP = 'stitcher_ip_address'
+              sed -i "/JITP_NAME =/ c\JITP_NAME = 'jitp1'" rm_api.py
+              sed -i "/JITP_IP =/ c\JITP_IP = 'jitp_mgmt_address'" rm_api.py
+              sed -i "/JITP_ROLE =/ c\JITP_ROLE = 0" rm_api.py
+              sed -i "/CR_SOURCE_PATTERN =/ c\CR_SOURCE_PATTERN = 'jitp_ip_address'" rm_api.py
+              #Could add this for DNS '-static.reverse.softlayer.co'
+              sed -i "/EBR_SOURCE_PATTERN =/ c\EBR_SOURCE_PATTERN = 'jitp_mgmt_address'" rm_api.py
+              sed -i "/TRANSCODER_NAME =/ c\TRANSCODER_NAME = 'transcoder1'" rm_api.py
+              sed -i "/TRANSCODER_IP =/ c\TRANSCODER_IP = 'TAT_ip_address'" rm_api.py
+              # 0: VMG, 1: TAT, 2: OTHER
+              sed -i "/TRANSCODER_TYPE =/ c\TRANSCODER_TYPE = 1" rm_api.py
+              sed -i "/{'name':'objectstorage','data':objectstorage},/d" rm_api.py
+              EOF
+              chmod +x config_rm_py.sh
+              echo "RM_API config updated"
+              # Finally configure the RM
+              exit 0
+
+           params:                                                                                                                                              
+              sources-ip: { get_param: Sources_address }
+              origin_address: { get_param: Origin_IP }
+              origin_path: { get_param: Origin_path }
+              jitp_ip_address: { get_attr: [ JITP_floating_ip, floating_ip_address ] }
+              jitp_mgmt_address: { get_attr: [ JITP, first_address ] }
+              rec_mgmt_address: { get_attr: [ Recorder, first_address ] }
+              stitcher_ip_address: { get_attr: [ JITP_floating_ip, floating_ip_address ] }
+              rec_ip_address: { get_attr: [ Recorder_floating_ip, floating_ip_address ] }
+              NFS_Storage_address: { get_param: NFS_Storage_address }
+              NFS_Storage_path: { get_param: NFS_Storage_path }
+              TAT_ip_address: { get_param: TAT_ip_address }
+      networks:
+        - port: { get_resource: RecordingManager_Client_port }
+        - port: { get_resource: RecordingManager_RGB_port }
+
+  RecordingManager_RGB_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_param: RGB_Services_Id }
+
+  RecordingManager_Client_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: client_net }
+
+  RecordingManager_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: External_Id }
+      port_id: { get_resource: RecordingManager_Client_port }
+
+  JITP:
+    type: OS::Nova::Server
+    properties:
+      name: Packager-JITP
+      image: RGB_CentOS-6.5_22525_Cloud
+      flavor: m1.RGB_Small
+      key_name: { get_param: Key_name }
+      user_data:
+        str_replace:
+           template: |
+              #!/bin/bash
+              exec 1>/var/log/RGBCloud.log 2>&1
+              rm -f /etc/localtime
+              ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+              sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/" /etc/ssh/sshd_config
+              service sshd restart
+              ip link set dev eth0 mtu 1450
+              ip link set dev eth1 mtu 1450
+              curl -s http://sources-ip/misc/sysctl.conf -o /etc/sysctl.conf
+              sysctl -p /etc/sysctl.conf
+              # Learn allocated IP addresses for Mgmt and Multicast
+              # Can remove this with IceHouse
+              myip=`curl -s http://169.254.169.254/1.0/meta-data/local-ipv4`
+              myip_eth1=`ifconfig eth1 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'`
+              echo "GATEWAY=10.10.1.1" >> /etc/sysconfig/network
+              # Update rc.local
+              cat << EOF >> /etc/rc.local
+              # Add routing
+              echo "Add routing"
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.10.1.1
+              # Run once to startup server
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  cd /root/sources
+                  #curl -s http://sources-ip/ndvr/v1.0.1/JITP_500_Trial.key -o JITP_500_Trial.key
+                  curl -s http://sources-ip/ndvr/v1.0.1/JITP_Stitcher_Record_500_Trial_2014.key -o JITP_Stitcher_Record_500_Trial_2014.key
+                  curl -s http://sources-ip/ndvr/v1.0.1/packager.rampx -o packager.rampx
+                  chmod +x packager.rampx
+                  /root/sources/packager.rampx -v -n
+                  cp /root/sources/JITP_Stitcher_Record_500_Trial_2014.key /var/lib/safenet/lservrc
+                  /etc/init.d/lserv restart
+                  #service ripcode start
+                  service ntpd restart
+                  touch /etc/rgb-cloud.done
+              fi
+              EOF
+              exit 0
+
+           params:                                                                                                                                              
+              sources-ip: { get_param: Sources_address } 
+              origin_address: { get_param: Origin_IP }
+              origin_path: { get_param: Origin_path }
+              jitp_ip_address: { get_attr: [ JITP_floating_ip, floating_ip_address ] }
+      networks:
+        - port: { get_resource: JITP_Client_port }
+        - port: { get_resource: JITP_RGB_port }
+
+  JITP_RGB_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_param: RGB_Services_Id }
+
+  JITP_Client_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: client_net }
+
+  JITP_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: External_Id }
+      port_id: { get_resource: JITP_Client_port }
+
+  Recorder:
+    type: OS::Nova::Server
+    properties:
+      name: Recorder
+      image: RGB_CentOS-6.5_22525_Cloudhls
+      flavor: m1.RGB_Large
+      key_name: { get_param: Key_name }
+      user_data: 
+        str_replace:
+           template: |
+              #!/bin/bash
+              exec 1>/var/log/RGBCloud.log 2>&1
+              rm -f /etc/localtime
+              ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+              sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/" /etc/ssh/sshd_config
+              service sshd restart
+              ip link set dev eth0 mtu 1450
+              ip link set dev eth1 mtu 1450
+              ip link set dev eth2 mtu 1450
+              curl -s http://sources-ip/misc/sysctl.conf -o /etc/sysctl.conf
+              sysctl -p /etc/sysctl.conf
+              # Learn allocated IP addresses for Mgmt and Multicast
+              # Can remove this with IceHouse
+              myip=`curl -s http://169.254.169.254/1.0/meta-data/local-ipv4`
+              myip_eth1=`ifconfig eth1 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'`
+              echo "GATEWAY=10.10.1.1" >> /etc/sysconfig/network
+              # Update rc.local
+              cat << EOF >> /etc/rc.local
+              # Run once to startup server
+              # Add routing
+              echo "Add routing"
+              route add -net 239.0.0.0 netmask 255.0.0.0 eth2
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.10.1.1
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  cd /root/sources
+                  curl -s http://sources-ip/ndvr/v1.0.1/JITP_Stitcher_Record_500_Trial_2014.key -o JITP_Stitcher_Record_500_Trial_2014.key
+                  curl -s http://sources-ip/ndvr/v1.0.1/packager.rampx -o packager.rampx
+                  chmod +x packager.rampx
+                  /root/sources/packager.rampx -v -n
+                  cp JITP_Stitcher_Record_500_Trial_2014.key /var/lib/safenet/lservrc
+                  /etc/init.d/lserv restart
+                  service ntpd restart
+                  #service ripcode restart
+                  touch /etc/rgb-cloud.done
+              fi
+              echo "\n\n\n\n\n\n" >> /tmp/ffmpeg.screen
+              screen -S ffmpeg -d -m sh -c '\
+              ffmpeg -re -i "http://192.155.251.108/video/1/Stream_1_RGB_SRC_HLS/Stream_1_RGB_SRC_HLS.m3u8?fifo_size=1000000&overrun_nonfatal=1" \
+                 -map 0:p:0 -acodec copy -vcodec copy -b:v 264000 -f mpegts "udp://239.10.10.20:5001?ttl=5&pkt_size=1316&fifo_size=1000000&overrun_nonfatal=1" \
+                 -map 0:p:1 -acodec copy -vcodec copy -b:v 514000 -f mpegts "udp://239.10.10.20:5002?ttl=5&pkt_size=1316&fifo_size=1000000&overrun_nonfatal=1" \
+                 -map 0:p:2 -acodec copy -vcodec copy -b:v 614000 -f mpegts "udp://239.10.10.20:5003?ttl=5&pkt_size=1316&fifo_size=1000000&overrun_nonfatal=1" >> /tmp/ffmpeg.screen'
+              EOF
+              exit 0
+
+           params:
+              sources-ip: { get_param: Sources_address }
+      networks:
+        - port: { get_resource: Recorder_Client_port }
+        - port: { get_resource: Recorder_Multicast_port }
+        - port: { get_resource: Recorder_RGB_port }
+
+  Recorder_RGB_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_param: RGB_Services_Id }
+
+  Recorder_Multicast_port:                                                                                                                                            
+    type: OS::Neutron::Port                                                                                                                                     
+    properties:                                                                                                                                                 
+      network_id: { get_param: Multicast_Id } 
+
+  Recorder_Client_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: client_net }
+
+  Recorder_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: External_Id }
+      port_id: { get_resource: Recorder_Client_port }
+
+outputs:
+  Recording_Manager_Public_ip:
+    description: IP address of the Recording Manager
+    value: { get_attr: [ RecorderManager_floating_ip, floating_ip_address ] }
+  Recorder_Public_ip:
+    description: IP address of the Recorder
+    value: { get_attr: [ Recorder_floating_ip, floating_ip_address ] }
+  Packager_Public_ip:
+    description: IP address of the Packager
+    value: { get_attr: [ JITP_floating_ip, floating_ip_address ] }

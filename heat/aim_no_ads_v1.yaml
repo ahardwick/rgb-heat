@@ -1,0 +1,187 @@
+heat_template_version: 2013-05-23
+
+description: >
+  HOT Template to create the AIM instances attached to a NEW router and NEW network/subnet.
+
+parameters:
+  Key_name:
+    type: string
+    description: Name of keypair to assign to servers
+    default: rgb_heat
+  Private_net_name:
+    type: string
+    description: Name of private network to be created
+  ADS_address:
+    type: string
+    description: Name of ADS server
+    default: 173.224.123.120
+  OSS_address:
+    type: string
+    description: Name of OSS server
+    default: 173.224.123.120
+  Sources_address:
+    type: string
+    description: Name Repository Server
+    default: 173.224.123.120
+
+resources:
+  private_net:
+    type: OS::Neutron::Net
+    properties:
+      name: { get_param: Private_net_name }
+
+  private_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: private_net }
+      cidr: 10.5.0.0/24
+      dns_nameservers : [8.8.8.8, 8.8.4.4]
+      gateway_ip: 10.5.0.1
+      allocation_pools:
+        - start: 10.5.0.50
+          end: 10.5.0.80
+
+  router:
+    type: OS::Neutron::Router
+
+  router_gateway:
+    type: OS::Neutron::RouterGateway
+    properties:
+      router_id: { get_resource: router }
+      network_id: 35a6b6e5-f048-466e-ab69-2c6b82a18cbe
+
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: private_subnet }
+
+  AWE:
+    type: OS::Nova::Server
+    properties:
+      name: AWE
+      image: RGB_CentOS-6.5_22525_Cloud
+      flavor: m1.RGB_Small
+      key_name: { get_param: Key_name }
+      user_data: 
+        str_replace:
+           template: |
+              #!/bin/bash -v  
+              echo "oss_ip_address  OSS  OSS.rgbnetworks.com" >> /etc/hosts
+              echo "ads_ip_address  ADS  ADS.rgbnetworks.com" >> /etc/hosts
+              echo "10.5.0.20  AWE  AWE.rgbnetworks.com" >> /etc/hosts
+              echo "ps_ip_address  PS  PS.rgbnetworks.com" >> /etc/hosts
+              # Add routing
+              echo "Add routing"
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.5.0.1
+              #Update /etc/sysconfig/network for gateway IP, just to be sure!
+              echo "GATEWAY=10.5.0.1" >> /etc/sysconfig/network
+              cat << EOF >> /etc/rc.local
+              ip link set dev eth0 mtu 1450
+              # Run once to startup server
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  service ntpd restart
+                  cd /root/sources
+                  curl -s http://sources-ip/aim/v1/awe.rampx -o awe.rampx
+                  chmod +x awe.rampx
+                  ./awe.rampx -v -n
+                  touch /etc/rgb-cloud.done
+              fi
+              EOF
+           params:
+              sources-ip: { get_param: Sources_address }
+              ps_ip_address: { get_attr: [ PS, first_address ] }
+              ads_ip_address: { get_param: ADS_address }
+              oss_ip_address: { get_param: OSS_address }
+      networks:
+        - port: { get_resource: AWE_port }
+
+  AWE_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: private_net }
+      fixed_ips:
+        - subnet_id: { get_resource: private_subnet }
+          ip_address: 10.5.0.20
+
+  AWE_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: 35a6b6e5-f048-466e-ab69-2c6b82a18cbe
+      port_id: { get_resource: AWE_port }
+
+  PS:
+    type: OS::Nova::Server
+    properties:
+      name: PS
+      image: RGB_CentOS-6.5_22525_Cloud
+      flavor: m1.RGB_Large
+      key_name: { get_param: Key_name }
+      user_data: 
+        str_replace:
+           template: |
+              #!/bin/bash -v  
+              echo "oss_ip_address  OSS  OSS.rgbnetworks.com" >> /etc/hosts
+              echo "ads_ip_address  ADS  ADS.rgbnetworks.com" >> /etc/hosts
+              echo "10.5.0.20  AWE  AWE.rgbnetworks.com" >> /etc/hosts
+              current_ip=`curl -s http://169.254.169.254/1.0/meta-data/local-ipv4`
+              current_hostname=`curl -s http://169.254.169.254/1.0/meta-data/hostname|cut -d'.' -f1`
+              echo "$current_ip $current_hostname $current_hostname.rgbnetworks.com" >> /etc/hosts
+              # Add routing
+              echo "Add routing"
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.5.0.1
+              #Update /etc/sysconfig/network for gateway IP, just to be sure!
+              echo "GATEWAY=10.5.0.1" >> /etc/sysconfig/network
+              cat << EOF >> /etc/rc.local
+              ip link set dev eth0 mtu 1450
+              # Run once to startup server
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  service ntpd restart
+                  cd /root/sources
+                  curl -s http://sources-ip/aim/v1/prrs.rampx -o prrs.rampx
+                  chmod +x prrs.rampx
+                  ./prrs.rampx -v -n
+                  sed -i "s/client_host = localhost/client_host = AWE/" /opt/rgb/etc/abrain.config
+                  sed -i "s/service_host = localhost/service_host = PS/" /opt/rgb/etc/abrain.config
+                  service aim restart
+                  touch /etc/rgb-cloud.done
+              fi
+              EOF
+           params:
+              sources-ip: { get_param: Sources_address }
+              ads_ip_address: { get_param: ADS_address }
+              oss_ip_address: { get_param: OSS_address }
+      networks:
+        - port: { get_resource: PS_port }
+
+  PS_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: private_net }
+      fixed_ips:
+        - subnet_id: { get_resource: private_subnet }
+
+  PS_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: 35a6b6e5-f048-466e-ab69-2c6b82a18cbe
+      port_id: { get_resource: PS_port }
+
+outputs:
+  AWE_private_ip:
+    description: IP address of AWE in private network
+    value: { get_attr: [ AWE, first_address ] }
+  AWE_public_ip:
+    description: Floating IP address of AWE in public network
+    value: { get_attr: [ AWE_floating_ip, floating_ip_address ] }
+  PS_private_ip:
+    description: IP address of PS in private network
+    value: { get_attr: [ PS, first_address ] }
+  PS_public_ip:
+    description: Floating IP address of PS in public network
+    value: { get_attr: [ PS_floating_ip, floating_ip_address ] }
+

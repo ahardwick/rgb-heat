@@ -1,0 +1,218 @@
+heat_template_version: 2013-05-23
+
+parameters:
+  Key_name:
+    type: string
+    description: keypair to enable SSH access to the instance.
+    default: rgb_heat
+  Private_net_name:
+    type: string
+    description: Name of private network to be created
+  ADS_address:
+    type: string
+    description: Name of ADS server
+    default: 173.224.123.120
+  OSS_address:
+    type: string
+    description: Name of OSS server
+    default: 173.224.123.120
+  Sources_address:
+    type: string
+    description: Name Repository Server
+    default: 192.155.251.107
+  PS_Image_name:
+    type: string
+    description: Image to use
+    default: RGB_CentOS-6.3_17601_Cloud
+  AWE_Image_name:
+    type: string
+    description: Image to use
+    default: RGB_CentOS-6.3_17601_Cloud
+  PS_flavor:
+    type: string
+    description: Flavor to use for PS
+    default: m1.RGB_Large
+    constraints:
+        - allowed_values:
+          - m1.RGB_Small
+          - m1.RGB_Medium
+          - m1.RGB_Large
+
+resources:
+  private_net:
+    type: OS::Neutron::Net
+    properties:
+      name: { get_param: Private_net_name }
+
+  private_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: private_net }
+      cidr: 10.5.0.0/24
+      dns_nameservers : [8.8.8.8, 8.8.4.4]
+      gateway_ip: 10.5.0.1
+      allocation_pools:
+        - start: 10.5.0.50
+          end: 10.5.0.80
+
+  router:
+    type: OS::Neutron::Router
+
+  router_gateway:
+    type: OS::Neutron::RouterGateway
+    properties:
+      router_id: { get_resource: router }
+      network_id: 176487e8-d187-4e42-88ff-4f8ec4674c0d
+
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: private_subnet }
+
+  AWE:
+    type: OS::Nova::Server
+    properties:
+      name: AWE
+      image: { get_param: AWE_Image_name }
+      flavor: m1.RGB_Small
+      key_name: { get_param: Key_name }
+      user_data:
+        str_replace:
+           template: |
+              #!/bin/bash
+              sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/" /etc/ssh/sshd_config
+              service sshd restart
+              echo "oss_ip_address  OSS  OSS.rgbnetworks.com" >> /etc/hosts
+              echo "ads_ip_address  ADS  ADS.rgbnetworks.com" >> /etc/hosts
+              echo "10.5.0.20  AWE  AWE.rgbnetworks.com" >> /etc/hosts
+              #echo "ps_ip_address  PS  PS.rgbnetworks.com" >> /etc/hosts
+              # Add routing
+              echo "Add routing"
+              route delete -net 0.0.0.0
+              route add -net 0.0.0.0 gw 10.5.0.1
+              #Update /etc/sysconfig/network for gateway IP, just to be sure!
+              echo "GATEWAY=10.5.0.1" >> /etc/sysconfig/network
+              cat << EOF >> /etc/rc.local
+              ip link set dev eth0 mtu 1450
+              # Run once to startup server
+              if [ ! -f /etc/rgb-cloud.done ];
+              then
+                  service ntpd restart
+                  mkdir /root/sources
+                  cd /root/sources
+                  #curl -s http://sources-ip/aim/v1/join.sh -o join.sh
+                  #curl -s http://sources-ip/aim/v1/leave.sh -o leave.sh
+                  #chmod +x *.sh
+                  #wget https://dl.bintray.com/mitchellh/serf/0.6.3_linux_amd64.zip -O serf.zip
+                  #unzip serf.zip
+                  #./serf agent -bind=10.5.0.20 -event-handler "member-join=/root/sources/join.sh" -event-handler "member-leave,member-failed=/root/sources/leave.sh" >> /var/log/serf.log 2>&1 &
+                  curl -s http://sources-ip/aim/v1/awe.rampx -o awe.rampx
+                  chmod +x awe.rampx
+                  ./awe.rampx -v -n
+                  touch /etc/rgb-cloud.done
+              fi
+              EOF
+           params:
+              sources-ip: { get_param: Sources_address }
+              ads_ip_address: { get_param: ADS_address }
+              oss_ip_address: { get_param: OSS_address }
+      networks:
+        - port: { get_resource: AWE_port }
+
+  AWE_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: private_net }
+      fixed_ips:
+        - subnet_id: { get_resource: private_subnet }
+          ip_address: 10.5.0.20
+
+  AWE_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: 176487e8-d187-4e42-88ff-4f8ec4674c0d
+      port_id: { get_resource: AWE_port }
+
+  PS_ASG:
+    type: "http://192.155.251.107/heat/aim/v1/aim_ps_asg.yaml"
+    properties:
+      Private_net_name: { get_param: Private_net_name }
+      private_net: { get_resource: private_net }
+      private_subnet: { get_resource: private_subnet }
+      public_net: 176487e8-d187-4e42-88ff-4f8ec4674c0d
+      ADS_address: { get_param: ADS_address }
+      OSS_address: { get_param: OSS_address }
+      Sources_address: { get_param: Sources_address }
+      Key_name: { get_param: Key_name }
+      Image_name: { get_param: PS_Image_name }
+      PS_flavor: { get_param: PS_flavor }
+      pool_id: { get_resource: pool }
+    depends_on: router_gateway
+
+  monitor:
+    type: OS::Neutron::HealthMonitor
+    properties:
+      type: HTTP
+      http_method: GET
+      expected_codes: "200"
+      url_path: "/AIMStatus"
+      delay: 3
+      max_retries: 5
+      timeout: 5
+
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      monitors: [{get_resource: monitor}]
+      subnet_id: { get_resource: private_subnet }
+      lb_method: ROUND_ROBIN
+      vip:
+        protocol_port: 8080
+        session_persistence: 
+          type: SOURCE_IP
+        subnet: { get_resource: private_subnet }
+
+  pool_vip_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: 176487e8-d187-4e42-88ff-4f8ec4674c0d
+      port_id: { get_attr: [pool, vip, port_id] }
+
+  lb:
+    type: OS::Neutron::LoadBalancer
+    properties:
+      protocol_port: 8080
+      pool_id: {get_resource: pool}
+
+outputs:
+  scale_up_url:
+    description: >
+      This URL is the webhook to scale up the group.  You can invoke
+      the scale-up operation by doing an HTTP POST to this URL; no
+      body nor extra headers are needed.
+    value: {get_attr: [PS_ASG, scale_up_url]}
+  scale_dn_url:
+    description: >
+      This URL is the webhook to scale down the group.  You can invoke
+      the scale-down operation by doing an HTTP POST to this URL; no
+      body nor extra headers are needed.
+    value: {get_attr: [PS_ASG, scale_dn_url]}
+  AWE_public_ip:
+    description: Floating IP address of AWE in public network
+    value: { get_attr: [ AWE_floating_ip, floating_ip_address ] }
+  LB_VIP_public_ip:
+    description: Floating IP address of LB in public network
+    value:
+      str_replace:
+        template: http://host:8080/AIMStatus
+        params:
+          host: { get_attr: [ pool_vip_floating_ip, floating_ip_address ] }
+  AIM_Demo_URL:
+    description: URL to 'aimdemo' linear content
+    value:
+      str_replace:
+        template: http://lb_vip:8080/oss/aim/aimdemo.m3u8?vservv=live&ProviderId=xfinitytv.com&AssetId=abcd0123456789012345&DeviceId=0
+        params:
+          lb_vip: { get_attr: [ pool_vip_floating_ip, floating_ip_address ] }
